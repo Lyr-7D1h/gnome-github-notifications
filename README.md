@@ -23,3 +23,9 @@ After adding the extension, restart GNOME Shell for changes to take effect:
 ```sh
 gnome-extensions enable github.notifications@lyr.7d1h.pm.me
 ```
+
+## Development
+
+1. Install (see [Installation](#installation))
+2. Make changes to the extension
+3. Run `dbus-run-session -- gnome-shell --nested --wayland`

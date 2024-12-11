@@ -1,15 +1,16 @@
-const { Soup, St, Gio, Gtk, Clutter, GLib } = imports.gi;
-const Main = imports.ui.main;
-const Mainloop = imports.mainloop;
-const ByteArray = imports.byteArray;
-const ExtensionUtils = imports.misc.extensionUtils;
-const Me = ExtensionUtils.getCurrentExtension();
-const Util = imports.misc.util;
-const MessageTray = imports.ui.messageTray;
-let { PACKAGE_VERSION } = imports.misc.config;
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import Soup from 'gi://Soup';
+import St from 'gi://St';
+import Gio from 'gi://Gio';
+import Gtk from 'gi://Gtk';
+import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
+import * as ExtensionUtils from 'resource:///org/gnome/shell/misc/extensionUtils.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
+import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+let { PACKAGE_VERSION } = Config;
 PACKAGE_VERSION = Number(PACKAGE_VERSION);
-
-let githubNotifications;
 
 function info(...messages) {
   for (const m of messages) {
@@ -23,8 +24,29 @@ function error(...messages) {
   }
 }
 
-class GithubNotifications {
-  constructor() {
+const Indicator = GObject.registerClass(
+  class Indicator extends PanelMenu.Button {
+    _init() {
+      super._init(0.0, _('Github Notifications'));
+
+      this.add_child(
+        new St.Icon({
+          icon_name: 'selection-mode-symbolic',
+          style_class: 'system-status-icon',
+        })
+      );
+
+      let item = new PopupMenu.PopupMenuItem(_('Show Notification'));
+      item.connect('activate', () => {
+        Main.notify(_('Whatʼs up, folks?'));
+      });
+      this.menu.addMenuItem(item);
+    }
+  }
+);
+
+export default class GithubNotifications extends Extension {
+  _init() {
     this.token = '';
     this.handle = '';
     this.hideWidget = false;
@@ -42,6 +64,24 @@ class GithubNotifications {
     this.showParticipatingOnly = false;
     this._source = null;
     this.settings = null;
+  }
+
+  _sendHttpRequest(url, callback) {
+    const request = Soup.Message.new('GET', url);
+
+    this._session.send_async(request, null, (session, result) => {
+      try {
+        session.send_finish(result);
+        if (request.get_status() === Soup.Status.OK) {
+          const response = request.get_response_body().data;
+          callback(true, response);
+        } else {
+          callback(false, `HTTP Error: ${request.get_status()}`);
+        }
+      } catch (error) {
+        callback(false, `Error: ${error.message}`);
+      }
+    });
   }
 
   interval() {
@@ -65,10 +105,16 @@ class GithubNotifications {
     this.initUI();
   }
 
-  start() {
-    this.settings = ExtensionUtils.getSettings(
+  enable() {
+    this._indicator = new Indicator();
+    Main.panel.addToStatusArea(this.uuid, this._indicator);
+
+    this.settings = this.getSettings(
       'org.gnome.shell.extensions.github.notifications'
     );
+    // this.settings = new Gio.Settings({
+    //   schema_id: 'org.gnome.shell.extensions.github.notifications',
+    // });
     if (!this.hasLazilyInit) {
       this.lazyInit();
     }
@@ -76,7 +122,7 @@ class GithubNotifications {
     Main.panel._rightBox.insert_child_at_index(this.box, 0);
   }
 
-  stop() {
+  disable() {
     this.stopLoop();
     Main.panel._rightBox.remove_child(this.box);
   }
@@ -119,7 +165,7 @@ class GithubNotifications {
       track_hover: true,
     });
     this.label = new St.Label({
-      text: '' + this.notifications.length,
+      text: '' + this.notifications.length || '-',
       style_class: 'system-status-icon notifications-length',
       y_align: Clutter.ActorAlign.CENTER,
       y_expand: true,
@@ -130,7 +176,7 @@ class GithubNotifications {
     let icon = new St.Icon({
       style_class: 'system-status-icon',
     });
-    icon.gicon = Gio.icon_new_for_string(`${Me.path}/github.svg`);
+    icon.gicon = Gio.icon_new_for_string(`${this.uuid}/github.svg`);
 
     this.box.add_actor(icon);
     this.box.add_actor(this.label);
@@ -224,6 +270,17 @@ class GithubNotifications {
       return false;
     });
   }
+  _readAllBytes(stream) {
+    const bytes = [];
+    const buffer = new Uint8Array(4096); // 4 KB buffer
+    let readBytes = 0;
+
+    while ((readBytes = stream.read(buffer, null)) > 0) {
+      bytes.push(...buffer.subarray(0, readBytes));
+    }
+
+    return bytes;
+  }
 
   fetchNotifications() {
     let message = new Soup.Message({ method: 'GET', uri: this.authUri });
@@ -245,8 +302,8 @@ class GithubNotifications {
         (_, result) => {
           try {
             let body = this.httpSession.send_and_read_finish(result);
-            body = body.get_data();
-            body = ByteArray.toString(body);
+            const textDecoder = new TextDecoder('utf-8');
+            const text = textDecoder.decode(body);
             if (message.get_status() == 200 || message.get_status() == 304) {
               if (message.get_response_headers().get_one('Last-Modified')) {
                 this.lastModified = message
@@ -260,7 +317,7 @@ class GithubNotifications {
               }
               this.planFetch(this.interval(), false);
               if (message.get_status() == 200) {
-                let data = JSON.parse(body);
+                const data = JSON.parse(text);
                 this.updateNotifications(data);
               }
               return;
@@ -397,16 +454,4 @@ class GithubNotifications {
     });
     Main.messageTray.add(this._source);
   }
-}
-
-function init() {}
-
-function enable() {
-  githubNotifications = new GithubNotifications();
-  githubNotifications.start();
-}
-
-function disable() {
-  githubNotifications.stop();
-  githubNotifications = null;
 }
